@@ -86,6 +86,18 @@ class ZeroTrustEngine:
         if "credential_stuffing" in indicators:
             score += 30
             reasons.append("Credential-stuffing signature")
+        try:
+            import json as _json
+            raw_dict = _json.loads(event.raw) if isinstance(event.raw, str) else (event.raw or {})
+            fl = int(raw_dict.get("failed_logins", 0))
+            if fl >= 3:
+                score += 35
+                reasons.append(f"{fl} repeated login failures recorded")
+            elif fl > 0:
+                score += 15
+                reasons.append(f"{fl} failed login attempt recorded")
+        except Exception:
+            pass
         score = min(100.0, score)
         desc = "; ".join(reasons) if reasons else f"User {event.user_id} verified (trust: {user_trust:.0f}%)"
         return score, desc
@@ -93,7 +105,8 @@ class ZeroTrustEngine:
     def score_behavior(self, event: TelemetryEvent, ml_result: Optional[Dict[str, Any]] = None) -> Tuple[Optional[float], str]:
         indicators = event.risk_indicators or []
         ml_anomaly = float(ml_result.get("anomaly_score", 0.08)) if ml_result else 0.08
-        base_score = max(4.0, round(ml_anomaly * 40.0, 1))
+        norm_anomaly = (ml_anomaly / 100.0) if ml_anomaly > 1.0 else ml_anomaly
+        base_score = max(4.0, round(norm_anomaly * 40.0, 1))
         reasons: List[str] = []
         high_risk_types = {
             "privilege_escalation": 55,
@@ -118,6 +131,9 @@ class ZeroTrustEngine:
         if "sensitive_resource" in indicators:
             base_score += 25
             reasons.append("Sensitive resource touched")
+        if ml_result and ml_result.get("predicted_class") == "malicious":
+            base_score += 40
+            reasons.append("ML threat classifier flagged malicious pattern")
         score = min(100.0, base_score)
         desc = "; ".join(reasons) if reasons else f"Behavioral baseline normal (anomaly: {ml_anomaly:.2f})"
         return score, desc
@@ -143,7 +159,7 @@ class ZeroTrustEngine:
                 reasons.append("Unrecognised operating system")
             desc_base = f"Device {node.label} enrolled (trust: {device_trust:.0f}%)"
         else:
-            score = 45.0
+            score = 65.0
             reasons.append(f"Unknown device not enrolled in Digital Twin: {event.device_id}")
             desc_base = f"Unenrolled device {event.device_id}"
 

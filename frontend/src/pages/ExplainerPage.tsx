@@ -119,7 +119,7 @@ export default function ExplainerPage() {
                 </span>
               </div>
               <div className="mt-2 text-2xl font-bold text-rose-400">
-                {bData?.malicious_pct?.toFixed(1) ?? "0.0"}%
+                {bData?.malicious_pct !== undefined ? (bData.malicious_pct > 0 && bData.malicious_pct < 0.1 ? bData.malicious_pct.toFixed(2) : bData.malicious_pct.toFixed(1)) : "0.0"}%
               </div>
               <Progress value={bData?.malicious_pct ?? 0} className="mt-2 h-1.5 bg-rose-950" />
               <div className="mt-1.5 text-[11px] text-muted-foreground">

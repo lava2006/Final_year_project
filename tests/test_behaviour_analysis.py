@@ -45,3 +45,34 @@ def test_behaviour_analysis_endpoint(auth_headers):
         # Float rounding sum should be approximately 100%
         assert 99.0 <= total_pct <= 101.0
         assert sum(counts.values()) == data["total_evaluated"]
+
+
+def test_malicious_scenario_classified_malicious_and_deny():
+    """Verify that multiple failed logins + PowerShell + sensitive resource + unknown device
+    is classified as Malicious and receives a Deny decision.
+    """
+    import json
+    from app.models.telemetry import TelemetryEvent
+    from app.services.risk_engine import ZeroTrustEngine
+
+    db = SessionLocal()
+    try:
+        ev = TelemetryEvent(
+            user_id="u-attacker",
+            device_id="dev-unknown-rogue-node",
+            target_id="d-srv-financial-core",
+            event_type="powershell",
+            location="Tor Exit Node",
+            status="failure",
+            risk_indicators=json.dumps(["sensitive_resource", "brute_force", "privilege_escalation"]),
+            raw=json.dumps({"failed_logins": 5, "command": "powershell -enc ...", "source": "SIMULATION"}),
+        )
+        engine = ZeroTrustEngine()
+        result = engine.evaluate(ev, db)
+
+        assert result.ml.get("predicted_class") == "malicious"
+        assert result.decision == "deny"
+        assert result.risk_score >= 75.0
+        assert "ML class=malicious" in result.summary
+    finally:
+        db.close()

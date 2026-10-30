@@ -60,7 +60,7 @@ class Settings(BaseSettings):
     # Zero Trust risk thresholds
     risk_threshold_allow: int = 30
     risk_threshold_restricted: int = 60
-    risk_threshold_deny: int = 100
+    risk_threshold_deny: int = 75
 
     # Deception trigger threshold
     deception_risk_threshold: int = 60

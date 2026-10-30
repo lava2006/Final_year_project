@@ -212,12 +212,30 @@ def get_behaviour_analysis(db: Session = Depends(get_db), _: User = Depends(get_
     avg_risk = round(sum(d.risk_score for d in decisions) / total, 1)
     avg_conf = round(sum(d.confidence for d in decisions) / total, 1)
 
+    normal_pct = round((normal_c / total) * 100, 2)
+    suspicious_pct = round((suspicious_c / total) * 100, 2)
+    anomalous_pct = round((anomalous_c / total) * 100, 2)
+    malicious_pct = round((malicious_c / total) * 100, 2)
+
+    diff = round(100.0 - (normal_pct + suspicious_pct + anomalous_pct + malicious_pct), 2)
+    if diff != 0:
+        counts_list = [("normal", normal_c), ("suspicious", suspicious_c), ("anomalous", anomalous_c), ("malicious", malicious_c)]
+        largest_key = max(counts_list, key=lambda x: x[1])[0]
+        if largest_key == "normal":
+            normal_pct = round(normal_pct + diff, 2)
+        elif largest_key == "suspicious":
+            suspicious_pct = round(suspicious_pct + diff, 2)
+        elif largest_key == "anomalous":
+            anomalous_pct = round(anomalous_pct + diff, 2)
+        else:
+            malicious_pct = round(malicious_pct + diff, 2)
+
     return {
         "total_evaluated": total,
-        "normal_pct": round((normal_c / total) * 100, 1),
-        "suspicious_pct": round((suspicious_c / total) * 100, 1),
-        "anomalous_pct": round((anomalous_c / total) * 100, 1),
-        "malicious_pct": round((malicious_c / total) * 100, 1),
+        "normal_pct": normal_pct,
+        "suspicious_pct": suspicious_pct,
+        "anomalous_pct": anomalous_pct,
+        "malicious_pct": malicious_pct,
         "counts": {
             "normal": normal_c,
             "suspicious": suspicious_c,
