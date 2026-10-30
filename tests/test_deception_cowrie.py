@@ -462,3 +462,60 @@ def test_threat_profiles_derive_timeline_technique_evidence_and_correlations(mon
     assert any(item["kind"] == "shared_protocol_port" for item in related)
     assert returning["external_intelligence"] == {"status": "not_available", "provider": None}
     db.close()
+
+
+def test_fidelity_rules_cover_all_three_levels():
+    """Verify that both CowrieService and DeceptionEngine deterministically produce
+    all three fidelity levels (LOW, MEDIUM, HIGH) according to their explainable criteria.
+    """
+    # 1. Test CowrieService._infer_fidelity
+    # LOW: First contact or port probe without auth/commands
+    low_events = [{"raw_eventid": "cowrie.session.connect", "src_ip": "1.2.3.4"}]
+    assert CowrieService._infer_fidelity(low_events) == "LOW"
+
+    # MEDIUM: Login attempt or reconnaissance
+    med_events = [{"raw_eventid": "cowrie.login.failed", "username": "admin", "password": "123"}]
+    assert CowrieService._infer_fidelity(med_events) == "MEDIUM"
+
+    # HIGH: Interactive session with commands recorded or file download
+    high_events = [
+        {"raw_eventid": "cowrie.session.connect", "src_ip": "1.2.3.4"},
+        {"raw_eventid": "cowrie.command.input", "command": "uname -a", "input": "uname -a"},
+        {"raw_eventid": "cowrie.command.input", "command": "whoami", "input": "whoami"},
+    ]
+    assert CowrieService._infer_fidelity(high_events) == "HIGH"
+
+    # 2. Test DeceptionEngine.select_decoy_and_fidelity
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    try:
+        deception = DeceptionEngine(db)
+
+        # LOW fidelity: low risk score, generic probe
+        dec_low = deception.select_adaptive_decoy(
+            risk_score=25.0,
+            event_type="network_request",
+            device_trust=95.0,
+        )
+        assert dec_low.fidelity_level == "LOW"
+
+        # MEDIUM fidelity: moderate elevated risk (e.g. failed login, risk 50)
+        dec_med = deception.select_adaptive_decoy(
+            risk_score=50.0,
+            event_type="failed_login",
+            history_failures=1,
+            device_trust=55.0,
+        )
+        assert dec_med.fidelity_level == "MEDIUM"
+
+        # HIGH fidelity: high risk posture or critical attack event (privilege escalation, risk 80)
+        dec_high = deception.select_adaptive_decoy(
+            risk_score=80.0,
+            event_type="privilege_escalation",
+            mitre_technique="T1059",
+            device_trust=20.0,
+        )
+        assert dec_high.fidelity_level == "HIGH"
+    finally:
+        db.close()

@@ -200,11 +200,25 @@ class DeceptionEngine:
             reasons.append("Web application anomaly or generic perimeter probe")
 
         # 2. Fidelity Level Selection based on attacker sophistication & risk
-        if risk_score >= 80 or history_failures >= 3 or (device_trust is not None and device_trust < 30):
+        is_high = (
+            risk_score >= 75
+            or evt in ("privilege_escalation", "data_exfiltration", "lateral_movement")
+            or tech in ("T1059", "T1078", "T1098")
+            or history_failures >= 3
+            or (device_trust is not None and device_trust < 30)
+        )
+        is_medium = (
+            risk_score >= 45
+            or evt in ("failed_login", "powershell", "abnormal_process", "usb_insertion")
+            or history_failures >= 1
+            or (device_trust is not None and device_trust < 60)
+        )
+
+        if is_high:
             fidelity = "HIGH"
             conf = 0.92
             reasons.append("High risk posture and repeated failures warrant deep high-fidelity honeypot trap")
-        elif risk_score >= 60:
+        elif is_medium:
             fidelity = "MEDIUM"
             conf = 0.85
             reasons.append("Moderate elevated risk warrants interactive simulation")

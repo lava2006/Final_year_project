@@ -14,6 +14,7 @@ Normalized Events Schema:
 """
 import json
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -270,6 +271,8 @@ class CowrieService:
         self.parser = CowrieParser()
         self._health_cache: Optional[Dict[str, Any]] = None
         self._health_cache_time: float = 0.0
+        self._last_ingest_mtime: float = 0.0
+        self._last_ingest_size: int = -1
 
     @staticmethod
     def simulation_mode_enabled() -> bool:
@@ -290,17 +293,18 @@ class CowrieService:
     @staticmethod
     def _infer_fidelity(events: List[Dict[str, Any]]) -> str:
         """Infer fidelity level according to documented definitions:
-        - HIGH: Deep interactive capture (file transfers, tool downloads, commands like wget/curl/chmod, multi-command payloads).
-        - MEDIUM: Observed Cowrie sessions (authentication attempts, brute force logins, reconnaissance commands like uname/id/whoami).
+        - HIGH: Deep interactive capture (interactive commands recorded, tool downloads, privilege escalation).
+        - MEDIUM: Observed Cowrie sessions (authentication attempts, brute force logins, reconnaissance).
         - LOW: Banner & connection logging (pure connection/banner grabs, port probes, zero auth/commands).
         """
         raw_events = [e.get("raw_eventid") or e.get("event_type") or "" for e in events]
         commands = " ".join((event.get("command") or event.get("input") or "") for event in events).lower()
         cmd_count = sum(1 for e in events if e.get("command") or e.get("input"))
-        has_file_download = any("file_download" in ev for ev in raw_events) or ("wget" in commands or "curl" in commands or "scp" in commands)
+        has_file_download = any("file_download" in ev for ev in raw_events) or any(tok in commands for tok in ["wget", "curl", "scp", "nc", "bash", "sh"])
         has_priv_esc = any(tok in commands for tok in ["sudo", "su -", "chmod", "chown", "passwd", "useradd"])
 
-        if has_file_download or has_priv_esc or cmd_count >= 3:
+        # HIGH: Deep interactive capture (file downloads, privilege escalation, multi-command execution)
+        if has_file_download or has_priv_esc or cmd_count >= 2:
             return "HIGH"
 
         has_auth = any("login" in ev for ev in raw_events) or any(e.get("username") or e.get("password") for e in events)
@@ -457,6 +461,24 @@ class CowrieService:
 
         raw_path = file_path or settings.cowrie_log_path
         path = self._ensure_input_file(raw_path)
+
+        p = Path(path)
+        try:
+            stat_res = p.stat()
+            file_mtime = stat_res.st_mtime
+            file_size = stat_res.st_size
+        except Exception:
+            file_mtime = 0.0
+            file_size = 0
+
+        if not file_path:
+            if (
+                hasattr(self, "_last_ingest_mtime")
+                and self._last_ingest_mtime == file_mtime
+                and self._last_ingest_size == file_size
+            ):
+                return 0
+
         events = self.parser.parse_file(path)
         if not events:
             return 0
@@ -568,6 +590,8 @@ class CowrieService:
             record.notes = f"Cowrie session ID: {sess_id}"
             count += 1
 
+        self._last_ingest_mtime = file_mtime
+        self._last_ingest_size = file_size
         db.commit()
         return count
 
