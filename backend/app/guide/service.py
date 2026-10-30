@@ -98,11 +98,24 @@ class GuideService:
         sid = conversation_id or session_id or "default_session"
         history = _SESSION_MEMORY.setdefault(sid, [])
 
+        # Open DB first so close_db is always defined before any early return
         close_db = False
         if db is None:
             from app.db.session import SessionLocal
             db = SessionLocal()
             close_db = True
+
+        # Check in-memory cache first for instant sub-millisecond response
+        from app.guide.cache import get_cached_answer, set_cached_answer
+        cached = get_cached_answer(question, detected_role, detected_style)
+        if cached:
+            res = dict(cached)
+            res["session_id"] = sid
+            res["role"] = detected_role
+            res["style"] = detected_style
+            if close_db:
+                db.close()
+            return res
 
         # Build grounded context facts block
         from .context_builder import ContextBuilder
@@ -172,6 +185,9 @@ class GuideService:
             "style": detected_style,
             "session_id": sid,
         }
+        # Don't cache guarded-action responses; each must generate a fresh action_id
+        if not result.get("proposed_action"):
+            set_cached_answer(question, detected_role, detected_style, result)
         if close_db:
             db.close()
         return result
@@ -357,8 +373,114 @@ An automated **{verdict_val}** action was immediately enforced, redirecting the 
         finally:
             if close_db:
                 db.close()
-
     generate_incident_report = generate_report
+
+    def stream_ask(
+        self,
+        question: str,
+        audience: str = "simple",
+        lens=None,
+        beginner_mode: bool = True,
+        session_id=None,
+        conversation_id=None,
+        db=None,
+        role=None,
+        style=None,
+        page_context=None,
+    ):
+        """Stream response tokens progressively using SSE format."""
+        import json
+        from .persona import detect_persona_in_text
+        aud = lens or audience
+        detected_role, detected_style, changed = detect_persona_in_text(question, aud, aud)
+        if changed:
+            aud = detected_style
+        else:
+            if role:
+                detected_role = role
+            if style:
+                detected_style = style
+                aud = style
+
+        sid = conversation_id or session_id or "default_session"
+        history = _SESSION_MEMORY.setdefault(sid, [])
+
+        # Cache check - instant sub-ms response for frequent questions
+        from app.guide.cache import get_cached_answer, set_cached_answer
+        cached = get_cached_answer(question, detected_role, detected_style)
+        if cached:
+            words = cached["answer"].split(" ")
+            for i, word in enumerate(words):
+                token = word if i == 0 else " " + word
+                yield f"data: {json.dumps({'token': token, 'provider': cached.get('provider_used', 'ollama')})}\n\n"
+            yield f"data: {json.dumps({'done': True, 'provider': cached.get('provider_used', 'ollama')})}\n\n"
+            return
+
+        close_db = False
+        if db is None:
+            from app.db.session import SessionLocal
+            db = SessionLocal()
+            close_db = True
+
+        from .context_builder import ContextBuilder
+        ctx = ContextBuilder(db).build_context(
+            question,
+            page_context=page_context,
+            role=detected_role,
+            style=detected_style,
+        )
+        augmented_question = f"Facts:\n{ctx['facts_block']}\n\nQuestion: {question}"
+
+        full_answer = []
+        try:
+            for token in self.chain.stream_direct_grounded_ollama(
+                question=augmented_question,
+                audience=aud,
+                history=history,
+                beginner_mode=beginner_mode,
+            ):
+                full_answer.append(token)
+                yield f"data: {json.dumps({'token': token, 'provider': 'ollama'})}\n\n"
+        except Exception as exc:
+            logger.warning("Streaming from Ollama encountered error: %s", exc)
+
+        accumulated = "".join(full_answer).strip()
+        if not accumulated:
+            res = self.ask(
+                question=question,
+                audience=audience,
+                lens=lens,
+                beginner_mode=beginner_mode,
+                session_id=session_id,
+                conversation_id=conversation_id,
+                db=db,
+                role=role,
+                style=style,
+                page_context=page_context,
+            )
+            accumulated = res.get("answer", "No response available.")
+            yield f"data: {json.dumps({'token': accumulated, 'provider': res.get('provider_used', 'offline')})}\n\n"
+
+        history.append({"role": "user", "content": question})
+        history.append({"role": "assistant", "content": accumulated})
+        if len(history) > 6:
+            _SESSION_MEMORY[sid] = history[-6:]
+
+        set_cached_answer(question, detected_role, detected_style, {
+            "answer": accumulated,
+            "audience": aud,
+            "lens": aud,
+            "confidence": "High",
+            "evidence": [{"source": "GroundingContext", "streamed": True}],
+            "provider_used": "ollama",
+            "role": detected_role,
+            "style": detected_style,
+        })
+
+        if close_db:
+            db.close()
+
+        yield f"data: {json.dumps({'done': True, 'provider': 'ollama'})}\n\n"
 
 
 guide_service = GuideService()
@@ -367,4 +489,3 @@ guide_service = GuideService()
 def get_guide_service() -> GuideService:
     """Dependency provider returning singleton GuideService instance."""
     return guide_service
-

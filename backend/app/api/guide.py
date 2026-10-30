@@ -12,6 +12,7 @@ Exposes grounded, explainable endpoints for the beginner assistant:
 """
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.guide.service import get_guide_service, GuideService
@@ -81,6 +82,29 @@ def chat_guide(
         role=req.role,
         style=req.style,
         page_context=req.page_context,
+    )
+
+
+
+@router.post("/chat-stream")
+def chat_guide_stream(
+    req: ChatRequest,
+    guide: GuideService = Depends(get_guide_service),
+):
+    """Streaming CipherTwinGuide endpoint using Server-Sent Events."""
+    prompt = req.message or req.question or ""
+    lens = req.lens or req.style or "simple"
+    return StreamingResponse(
+        guide.stream_ask(
+            question=prompt,
+            lens=lens,
+            beginner_mode=req.beginner_mode,
+            conversation_id=req.conversation_id,
+            role=req.role,
+            style=req.style,
+            page_context=req.page_context,
+        ),
+        media_type="text/event-stream",
     )
 
 

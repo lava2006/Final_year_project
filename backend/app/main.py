@@ -44,6 +44,11 @@ async def lifespan(app: FastAPI):
         event_engine.start()
         logging.info("Continuous dynamic attack and telemetry engine started (1 event/sec).")
 
+    # 6. Pre-warm local LLM in background so the first chat prompt is instant
+    import threading
+    from app.guide.llm import warmup_ollama
+    threading.Thread(target=warmup_ollama, daemon=True, name="ollama-warmup").start()
+
     yield
 
     # Graceful shutdown

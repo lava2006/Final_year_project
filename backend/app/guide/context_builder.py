@@ -73,6 +73,26 @@ class ContextBuilder:
         q_lower = query.lower()
         page_lower = (page_context or "").lower()
 
+        # Check for pure conceptual / architectural questions
+        # For pure concepts, provide a concise reference block and skip raw database tables.
+        is_concept_query = (
+            any(w in q_lower for w in ["what is", "explain how", "how does", "why do we", "tell me about", "what does", "define"])
+            and not any(w in q_lower for w in ["latest", "recent", "today", "now", "current", "incident", "last", "session", "device", "ip", "table", "stats"])
+        )
+        if is_concept_query:
+            concept_facts = (
+                "CIPHERTWIN ARCHITECTURAL SPECIFICATIONS:\n"
+                "- Zero Trust Engine: Continuous risk scoring (0-100) evaluating Identity Confidence, Behavioral Deviation, Device Posture, Location Anomaly, and Prior History. Actions: Allow (<45), Restrict (45-74), Deny (>=75).\n"
+                "- Adaptive Deception: Routes unauthorized/malicious SSH connections to Cowrie honeypots (port 2222) categorized into Low, Medium, and High fidelity.\n"
+                "- Network Digital Twin: Graph-based asset model that simulates attack paths and blast radiuses safely without touching production assets.\n"
+                "- QAOA Optimizer: Statevector PennyLane circuit balancing policy weights using QUBO formulation, warm-started from classical SciPy."
+            )
+            return {
+                "facts_block": concept_facts,
+                "verified_items": [{"source": "ArchitectureReference", "concept_only": True}],
+                "intents": {"concept": True, "zero_trust": True, "honeypot": False, "twin": False, "policy": False},
+            }
+
         facts: List[str] = []
         verified_items: List[Dict[str, Any]] = []
 
@@ -181,16 +201,9 @@ class ContextBuilder:
         lines = ["ZERO-TRUST RECENT EVALUATIONS:"]
         serialized = []
         for d in recent_decisions:
-            factor_summary = [{"name": f.name, "contribution": f.contribution} for f in (d.factors or [])]
-            untrusted_info = sanitize_untrusted_data({
-                "user_id": d.user_id,
-                "device_id": d.device_id,
-                "resource_id": d.resource_id,
-                "factors": factor_summary,
-            })
             timestamp_str = d.timestamp.strftime("%Y-%m-%d %H:%M:%S UTC") if d.timestamp else "recent"
             lines.append(
-                f"- ID {d.id} at {timestamp_str}: Decision={d.decision}, RiskScore={d.risk_score:.1f}/100, Summary={d.summary or 'Evaluated against policy thresholds'}. Context: {untrusted_info}"
+                f"- ID {d.id} ({timestamp_str}): Decision={d.decision}, Risk={d.risk_score:.1f}/100, User={d.user_id}, Resource={d.resource_id}, Summary={d.summary or 'Evaluated'}"
             )
             serialized.append({
                 "id": d.id,
@@ -218,12 +231,10 @@ class ContextBuilder:
         lines = ["DECOY HONEYPOT FORENSICS:"]
         serialized = []
         for s in recent_sessions:
-            untrusted_cmds = sanitize_untrusted_data(s.commands or "[]")
             timestamp_str = s.timestamp.strftime("%Y-%m-%d %H:%M:%S UTC") if s.timestamp else "recent"
+            cmds_preview = (s.commands or "[]")[:60]
             lines.append(
-                f"- Decoy Session ID {s.id} ({timestamp_str}): Type={s.decoy_type}, Mode={s.mode or 'SIMULATED'}, "
-                f"Source IP={s.source_ip or 'unknown'}, CredentialsUsed={s.credentials_used or 'none'}. "
-                f"Recorded commands: {untrusted_cmds}"
+                f"- Decoy ID {s.id} ({timestamp_str}): Type={s.decoy_type}, Fidelity={s.fidelity or 'LOW'}, IP={s.source_ip or 'unknown'}, Cmds={cmds_preview}"
             )
             serialized.append({
                 "id": s.id,

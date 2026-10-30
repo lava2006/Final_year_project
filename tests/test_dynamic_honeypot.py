@@ -21,7 +21,7 @@ def test_select_adaptive_decoy_ssh():
 
 
 def test_select_adaptive_decoy_database():
-    # Database exfiltration signal
+    # Database exfiltration signal — risk=75 triggers HIGH fidelity (Issue 2 fix)
     decision = DeceptionEngine.select_adaptive_decoy(
         risk_score=75.0,
         mitre_technique="T1041",
@@ -29,7 +29,8 @@ def test_select_adaptive_decoy_database():
         sensitivity="critical",
     )
     assert decision.selected_decoy == "database"
-    assert decision.fidelity_level == "MEDIUM"
+    # data_exfiltration at risk>=75 is HIGH fidelity per the corrected rule
+    assert decision.fidelity_level == "HIGH"
     assert "MySQL" in decision.persona or "PostgreSQL" in decision.persona
     assert decision.banner != ""
 
@@ -48,13 +49,14 @@ def test_select_adaptive_decoy_admin_panel():
 
 
 def test_select_adaptive_decoy_api():
-    # API token probing signal
+    # API token probing signal — risk=50 is in suspicious/moderate range → MEDIUM fidelity (Issue 2 fix)
     decision = DeceptionEngine.select_adaptive_decoy(
         risk_score=50.0,
         event_type="api_token_probe",
     )
     assert decision.selected_decoy == "api"
-    assert decision.fidelity_level == "LOW"
+    # api_token_probe at risk=50 is MEDIUM fidelity per the corrected rule
+    assert decision.fidelity_level == "MEDIUM"
     assert "Decoy" in decision.persona or "REST" in decision.persona
 
 

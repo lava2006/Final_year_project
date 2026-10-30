@@ -133,34 +133,120 @@ export function CipherTwinGuide() {
     setLoading(true);
 
     try {
-      const res = await api.post(
-        "/guide/chat",
-        {
+      const response = await fetch("/api/guide/chat-stream", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
           message: text,
           role: role,
           style: style,
           beginner_mode: role.includes("Beginner") || role.includes("Student"),
           page_context: window.location.pathname,
-        },
-        { timeout: 90000 }
-      );
+        }),
+      });
 
-      const assistantMsg: Message = {
-        role: "assistant",
-        content: res.data?.answer || "No response received.",
-        provider: res.data?.provider_used || "ollama",
-        timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-      };
+      if (!response.ok || !response.body) {
+        throw new Error(`Streaming error: ${response.status}`);
+      }
 
-      setMessages((prev) => [...prev, assistantMsg]);
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let receivedTokens = false;
+      let assistantAdded = false;
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (trimmed.startsWith("data: ")) {
+            try {
+              const data = JSON.parse(trimmed.slice(6));
+              if (data.token) {
+                receivedTokens = true;
+                setMessages((prev) => {
+                  if (!assistantAdded) {
+                    assistantAdded = true;
+                    return [
+                      ...prev,
+                      {
+                        role: "assistant",
+                        content: data.token,
+                        provider: data.provider || "ollama",
+                        timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+                      },
+                    ];
+                  }
+                  const updated = [...prev];
+                  const lastIdx = updated.length - 1;
+                  updated[lastIdx] = {
+                    ...updated[lastIdx],
+                    content: updated[lastIdx].content + data.token,
+                    provider: data.provider || updated[lastIdx].provider,
+                  };
+                  return updated;
+                });
+              }
+            } catch (e) {
+              // ignore json parse error on partial chunks
+            }
+          }
+        }
+      }
+
+      if (!receivedTokens) {
+        // Fallback to static /guide/chat
+        const res = await api.post("/guide/chat", {
+          message: text,
+          role: role,
+          style: style,
+          beginner_mode: role.includes("Beginner") || role.includes("Student"),
+          page_context: window.location.pathname,
+        });
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: res.data?.answer || "No response received.",
+            provider: res.data?.provider_used || "ollama",
+            timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+          },
+        ]);
+      }
     } catch (err: any) {
-      const errMsg: Message = {
-        role: "assistant",
-        content: `Sorry, unable to get a response right now (${err?.message || "connection error"}). Please verify backend and Ollama status.`,
-        provider: "offline",
-        timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-      };
-      setMessages((prev) => [...prev, errMsg]);
+      try {
+        const res = await api.post("/guide/chat", {
+          message: text,
+          role: role,
+          style: style,
+          beginner_mode: role.includes("Beginner") || role.includes("Student"),
+          page_context: window.location.pathname,
+        });
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: res.data?.answer || "No response received.",
+            provider: res.data?.provider_used || "ollama",
+            timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+          },
+        ]);
+      } catch (fallbackErr: any) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: `Sorry, unable to get a response right now (${fallbackErr?.message || "connection error"}).`,
+            provider: "offline",
+            timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+          },
+        ]);
+      }
     } finally {
       setLoading(false);
     }
@@ -288,7 +374,7 @@ export function CipherTwinGuide() {
               </div>
             ))}
 
-            {loading && (
+            {loading && messages[messages.length - 1]?.role === "user" && (
               <div className="flex items-start">
                 <div className="max-w-[88%] p-3 rounded-xl bg-slate-800/90 border border-slate-700 text-slate-400 rounded-bl-none flex items-center gap-2">
                   <div className="w-2 h-2 rounded-full bg-cyan-400 animate-bounce" />
