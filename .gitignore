@@ -24,6 +24,7 @@ Thumbs.db
 .env
 
 # Data
+data/
 backend/data/*.db
 backend/data/*.db-journal
 
@@ -39,3 +40,14 @@ dashboard/.streamlit/secrets.toml
 backend/data/cowrie/log/
 .pytest_cache/
 benchmark_results.json
+
+# Scratch and diag
+check_*.py
+patch_*.py
+count_rows.py
+find_buttons.py
+measure_perf.py
+scripts/diag*.py
+scripts/fix_*.py
+scripts/patch_*.py
+scripts/test_*.py

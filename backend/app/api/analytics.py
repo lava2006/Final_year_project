@@ -4,6 +4,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -53,60 +54,72 @@ def overview(db: Session = Depends(get_db), _: User = Depends(get_current_user))
     decoys = db.query(DecoySession).count()
     policies_count = db.query(Policy).count()
 
-    # Risk trend: hourly average score over last 24h
+    # Risk trend: hourly average score over last 24h via single indexed aggregation
+    trend_counts = (
+        db.query(
+            func.strftime("%Y-%m-%d %H:00:00", RiskDecision.timestamp).label("hour_slot"),
+            func.avg(RiskDecision.risk_score),
+            func.count(RiskDecision.id),
+        )
+        .filter(RiskDecision.timestamp >= datetime.now(timezone.utc) - timedelta(hours=24))
+        .group_by("hour_slot")
+        .all()
+    )
+    trend_map = {r[0]: (r[1] or 0.0, r[2] or 0) for r in trend_counts}
     risk_trend = []
     for hour in range(23, -1, -1):
-        ts_from = datetime.now(timezone.utc) - timedelta(hours=hour + 1)
         ts_to = datetime.now(timezone.utc) - timedelta(hours=hour)
-        rows = db.query(RiskDecision).filter(
-            RiskDecision.timestamp >= ts_from,
-            RiskDecision.timestamp < ts_to,
-        ).all()
-        avg = sum(r.risk_score for r in rows) / len(rows) if rows else 0
+        slot_key = ts_to.strftime("%Y-%m-%d %H:00:00")
+        avg, cnt = trend_map.get(slot_key, (0.0, 0))
         risk_trend.append({
             "hour": ts_to.strftime("%H:%M"),
             "score": round(avg, 2),
-            "count": len(rows),
+            "count": cnt,
         })
 
-    # Telemetry by type
-    types = db.query(TelemetryEvent.event_type).all()
-    type_counter = Counter(t[0] for t in types)
-    telemetry_by_type = [
-        {"event_type": k, "count": v} for k, v in type_counter.most_common()
-    ]
+    # Telemetry by type via SQL group-by
+    type_counts = (
+        db.query(TelemetryEvent.event_type, func.count(TelemetryEvent.id))
+        .group_by(TelemetryEvent.event_type)
+        .order_by(func.count(TelemetryEvent.id).desc())
+        .all()
+    )
+    telemetry_by_type = [{"event_type": k, "count": v} for k, v in type_counts]
 
-    # Top attacked assets
-    target_counter = Counter()
-    for ev in db.query(TelemetryEvent).filter(
-        TelemetryEvent.timestamp >= datetime.now(timezone.utc) - timedelta(hours=24)
-    ).all():
-        target_counter[ev.target_id] += 1
+    # Top attacked assets via SQL group-by
+    target_counts = (
+        db.query(TelemetryEvent.target_id, func.count(TelemetryEvent.id))
+        .filter(TelemetryEvent.timestamp >= datetime.now(timezone.utc) - timedelta(hours=24))
+        .group_by(TelemetryEvent.target_id)
+        .order_by(func.count(TelemetryEvent.id).desc())
+        .limit(8)
+        .all()
+    )
     target_nodes = {n.id: n for n in nodes}
     top_attacked = [
         {"target_id": tid, "label": target_nodes[tid].label if tid in target_nodes else tid, "count": c}
-        for tid, c in target_counter.most_common(8)
+        for tid, c in target_counts
     ]
 
-    # Top risky users (avg risk in last 24h)
-    user_scores = defaultdict(list)
-    for d in db.query(RiskDecision).filter(
-        RiskDecision.timestamp >= datetime.now(timezone.utc) - timedelta(hours=24)
-    ).all():
-        user_scores[d.user_id].append(d.risk_score)
-    top_risky_users = []
-    for uid, scores in user_scores.items():
-        avg = sum(scores) / len(scores)
-        node = target_nodes.get(uid)
-        top_risky_users.append({
+    # Top risky users (avg risk in last 24h) via SQL group-by
+    user_counts = (
+        db.query(RiskDecision.user_id, func.avg(RiskDecision.risk_score), func.count(RiskDecision.id))
+        .filter(RiskDecision.timestamp >= datetime.now(timezone.utc) - timedelta(hours=24))
+        .group_by(RiskDecision.user_id)
+        .order_by(func.avg(RiskDecision.risk_score).desc())
+        .limit(8)
+        .all()
+    )
+    top_risky_users = [
+        {
             "user_id": uid,
-            "label": node.label if node else uid,
-            "department": node.department if node else None,
-            "avg_risk": round(avg, 2),
-            "events": len(scores),
-        })
-    top_risky_users.sort(key=lambda r: r["avg_risk"], reverse=True)
-    top_risky_users = top_risky_users[:8]
+            "label": target_nodes[uid].label if uid in target_nodes else uid,
+            "department": target_nodes[uid].department if uid in target_nodes else None,
+            "avg_risk": round(avg or 0.0, 2),
+            "events": count,
+        }
+        for uid, avg, count in user_counts
+    ]
 
     return {
         "online_devices": online,
@@ -185,15 +198,21 @@ def optimization_timeline(db: Session = Depends(get_db), _: User = Depends(get_c
 
 @router.get("/telemetry-volume")
 def telemetry_volume(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+    vol_counts = (
+        db.query(
+            func.strftime("%Y-%m-%d %H:00:00", TelemetryEvent.timestamp).label("hour_slot"),
+            func.count(TelemetryEvent.id),
+        )
+        .filter(TelemetryEvent.timestamp >= datetime.now(timezone.utc) - timedelta(hours=24))
+        .group_by("hour_slot")
+        .all()
+    )
+    vol_map = {r[0]: r[1] for r in vol_counts}
     data = []
     for hour in range(23, -1, -1):
-        ts_from = datetime.now(timezone.utc) - timedelta(hours=hour + 1)
         ts_to = datetime.now(timezone.utc) - timedelta(hours=hour)
-        c = db.query(TelemetryEvent).filter(
-            TelemetryEvent.timestamp >= ts_from,
-            TelemetryEvent.timestamp < ts_to,
-        ).count()
-        data.append({"hour": ts_to.strftime("%H:%M"), "count": c})
+        slot_key = ts_to.strftime("%Y-%m-%d %H:00:00")
+        data.append({"hour": ts_to.strftime("%H:%M"), "count": vol_map.get(slot_key, 0)})
     return data
 
 
